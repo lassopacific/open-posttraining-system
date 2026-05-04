@@ -192,7 +192,6 @@ class FeedForward(nn.Module):
         # x = (b, t, emb_dim) or (batch, seq_len, d_model)
         x_fc1 = self.fc1(x)  ## (b, t, emb_dim) --> (b, t, d_ff)
         x_fc2 = self.fc2(x)  ## (b,t, emb_dim) --> (b,t, d_ff)
-        x_fc3 = self.fc3(x)  ## (b, t, d_ff)  --> (b,t, emb_dim)
 
         ## swiglu activation
         x = F.silu(x_fc1) * x_fc2  ## (b,t, d_ff) * (b,t, d_ff) --> (b,t, d_ff)
@@ -285,7 +284,7 @@ class Qwen3Model(nn.Module):
         token_emb = self.emb(in_ids)
         x = token_emb   ##(b,t,emb_dim)
 
-        num_tokens = x.shape(1)
+        num_tokens = x.shape[1]
 
         if cache is not None:
             ## inference mode 
@@ -300,12 +299,20 @@ class Qwen3Model(nn.Module):
             # rows:   start_pos → end_pos   → num_tokens
             # cols:   0 → end_pos           → total tokens so far
             # mask.shape = (num_tokens, end_pos)
+            
+            ## For inference, use only the cos/sin for the current positions
+            cos = self.cos[start_pos:end_pos].to(x.device).to(x.dtype)  ## shape: (num_tokens, head_dim//2)
+            sin = self.sin[start_pos:end_pos].to(x.device).to(x.dtype)
 
         else: ## training mode 
             start_pos = 0 
             mask = torch.triu(
                 torch.ones(num_tokens, num_tokens, device=x.device, dtype=torch.bool), diagonal=1)
                 # (num_tokens, num_tokens)
+            
+            ## For training, use all cos/sin up to num_tokens
+            cos = self.cos[:num_tokens].to(x.device).to(x.dtype)  ## shape: (num_tokens, head_dim//2)
+            sin = self.sin[:num_tokens].to(x.device).to(x.dtype)
 
         ### broadcast mask
         mask = mask[None, None, :, :]  ## shape = (1,1,num_tokens,num_tokens) or (1,1,new_tokens, end_pos)
@@ -314,7 +321,7 @@ class Qwen3Model(nn.Module):
             blk_cache = cache.get(i) if cache else None
 
             ## shape = (b, t, emb_dim)
-            x, new_blk_cache = block(x, mask, self.cos, self.sin, cache=blk_cache)
+            x, new_blk_cache = block(x, mask, cos, sin, cache=blk_cache)
 
             if cache is not None: 
                 cache.update(i, new_blk_cache)
