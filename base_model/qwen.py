@@ -15,6 +15,7 @@ from tokenizers import Tokenizer
 
 
 
+
 ## rope
 
 def compute_rope_angles(head_dim, theta_base=10000, context_length=2048, dtype=torch.float32):
@@ -106,8 +107,8 @@ class GroupQueryAttention(nn.Module):
         self.proj_out = nn.Linear(self.d_out, self.d_in, dtype=dtype)   ## (b, t, num_heads * h_dim)
         
 
-        self.q_norm = RMSNorm(self.d_out) ## (b, t, num_heads * h_dim)
-        self.k_norm = RMSNorm(self.kv_heads * self.h_dim)  ##  (b, t, kv_heads * h_dim)
+        self.q_norm = RMSNorm(self.h_dim) ## Normalize per head dimension
+        self.k_norm = RMSNorm(self.h_dim)  ## Normalize per head dimension
         
 
 
@@ -435,98 +436,120 @@ class Qwen3Tokenizer:
 
 
 
-## ok, load hf weights into qwen
-import  torch
+import torch
+import logging
+from pathlib import Path
+from safetensors.torch import load_file
+
+
 def load_hf_weights_into_qwen(model, param_config, params):
+
     def assign(left, right, tensor_name="unknown"):
         if left.shape != right.shape:
-            raise ValueError(f"There is a shape mismatch in tensor {tensor_name}. Left Shape: {left.shape}, Right Shape {right.shape}")
-        
+            print(f"Skipping {tensor_name} due to shape mismatch: "
+                  f"{left.shape} vs {right.shape}")
+            return
+
         with torch.no_grad():
-            if isinstance(right, torch.Tensor):
-                left.copy_(right) ## copy the weights, into left
-            else: 
-                left.copy_(torch.as_tensor(right, dtype=left.dtype, device=left.device))   ## convert format to tensors and copy to left
-        
-        return left
-    
+            left.copy_(right)
 
-    model.emb.weight = assign(model.emb.weight, params["model.embed_tokens.weight"], "model.embed_tokens.weight")
+    # ---- Embedding ----
+    assign(
+        model.emb.weight,
+        params["model.embed_tokens.weight"],
+        "model.embed_tokens.weight"
+    )
 
+    # ---- Transformer blocks ----
     for l in range(param_config["n_layers"]):
         block = model.t_block[l]
         att = block.att
-        
-        ## these are the q,k,v projections
-        att.w_query.weight = assign(att.w_query.weight, params[f"model.layers.{l}.self_attn.q_proj.weight"], f"model.layers.{l}.self_attn.q_proj.weight")
-        att.w_keys.weight = assign(att.w_keys.weight, params[f"model.layers.{l}.self_attn.k_proj.weight"], f"model.layers.{l}.self_attn.k_proj.weight")
-        att.w_values.weight = assign(att.w_values.weight, params[f"model.layers.{l}.self_attn.v_proj.weight"], f"model.layers.{l}.self_attn.v_proj.weight")
 
-        ### output projection
-        att.proj_out.weight = assign(att.proj_out.weight, params[f"model.layers.{l}.self_attn.o_proj.weight"], f"model.layers.{l}.self_attn.o_proj.weight")
+        # ---- Attention ----
+        assign(att.w_query.weight,
+               params[f"model.layers.{l}.self_attn.q_proj.weight"],
+               f"model.layers.{l}.self_attn.q_proj.weight")
 
+        assign(att.w_keys.weight,
+               params[f"model.layers.{l}.self_attn.k_proj.weight"],
+               f"model.layers.{l}.self_attn.k_proj.weight")
 
+        assign(att.w_values.weight,
+               params[f"model.layers.{l}.self_attn.v_proj.weight"],
+               f"model.layers.{l}.self_attn.v_proj.weight")
 
-        ## q,k norm
-        if hasattr(att, "q_norm") and att.q_norm is not None:
-            att.q_norm.weight = assign(att.q_norm.weight, params[f"model.layers.{l}.self_attn.q_norm.weight"], f"model.layers.{l}.self_attn.q_norm.weight")
+        assign(att.proj_out.weight,
+               params[f"model.layers.{l}.self_attn.o_proj.weight"],
+               f"model.layers.{l}.self_attn.o_proj.weight")
 
-        if hasattr(att, "k_norm")  and att.k_norm is not None:
-            att.k_norm.weight = assign(att.k_norm.weight, params[f"model.layers.{l}.self_attn.k_norm.weight"], f"model.layers.{l}.self_attn.k_norm.weight")
-                   
-        if hasattr(block, "rms_norm1"):
-            block.rms_norm1.weight = assign(block.rms_norm1.weight, params[f"model.layers.{l}.input_layernorm.weight"], f"model.layers.{l}.input_layernorm.weight")
+        # ---- Optional norms (SAFE LOAD) ----
+        q_key = f"model.layers.{l}.self_attn.q_norm.weight"
+        if hasattr(att, "q_norm") and att.q_norm is not None and q_key in params:
+            assign(att.q_norm.weight, params[q_key], q_key)
 
+        k_key = f"model.layers.{l}.self_attn.k_norm.weight"
+        if hasattr(att, "k_norm") and att.k_norm is not None and k_key in params:
+            assign(att.k_norm.weight, params[k_key], k_key)
 
-        ## Feedforward weightss
+        # ---- LayerNorm 1 ----
+        ln1_key = f"model.layers.{l}.input_layernorm.weight"
+        if hasattr(block, "rms_norm1") and ln1_key in params:
+            assign(block.rms_norm1.weight, params[ln1_key], ln1_key)
+
+        # ---- Feedforward ----
         if "num_experts" in param_config:
-            ## load router (gating weights)
-            block.ff.gate.weight = assign(block.ff.gate.weight, params[f"model.layers{l}.mlp.gate.weight"], f"model.layers{l}.mlp.gate.weight")
+            # Router
+            gate_key = f"model.layers.{l}.mlp.gate.weight"
+            if gate_key in params:
+                assign(block.ff.gate.weight, params[gate_key], gate_key)
 
+            # Experts
+            for e in range(param_config["num_experts"]):
+                prefix = f"model.layers.{l}.mlp.experts.{e}"
 
-            ## load expert weights
-            for e in range(param_config["n_layers"]):
+                assign(block.ff.fc1[e].weight,
+                       params.get(f"{prefix}.gate_proj.weight", torch.empty(0)),
+                       f"{prefix}.gate_proj.weight")
 
-                prefix = f"model.layers{l}.mlp.experts.{e}"
+                assign(block.ff.fc2[e].weight,
+                       params.get(f"{prefix}.up_proj.weight", torch.empty(0)),
+                       f"{prefix}.up_proj.weight")
 
-                block.ff.fc1[e].weight = assign(block.ff.fc1[e].weight, params[f"{prefix}.gate_proj.weight"], f"{prefix}.gate_proj.weight")
+                assign(block.ff.fc3[e].weight,
+                       params.get(f"{prefix}.down_proj.weight", torch.empty(0)),
+                       f"{prefix}.down_proj.weight")
 
-                block.ff.fc2[e].weight = assign(block.ff.fc2[e].weight, params[f"{prefix}.up_proj.weight"], f"{prefix}.up_proj.weight")
-
-                block.ff.fc3[e].weight = assign(block.ff.fc3[e].weight, params[f"{prefix}.down_proj.weight"], f"{prefix}.down_proj.weight")
-
-
-                ## moving layers to cpu
-                block.ff.fc1[e] = block.ff.fc1[e].to("cpu")
-                block.ff.fc2[e] = block.ff.fc2[e].to("cpu")
-                block.ff.fc3[e] = block.ff.fc3[e].to("cpu")
-        
         else:
+            assign(block.ff.fc1.weight,
+                   params[f"model.layers.{l}.mlp.gate_proj.weight"],
+                   f"model.layers.{l}.mlp.gate_proj.weight")
 
-            block.ff.fc1.weight = assign(block.ff.fc1.weight, params[f"model.layers{l}.mlp.gate_proj.weight"], f"model.layers{l}.mlp.gate_proj.weight")
+            assign(block.ff.fc2.weight,
+                   params[f"model.layers.{l}.mlp.up_proj.weight"],
+                   f"model.layers.{l}.mlp.up_proj.weight")
 
-            block.ff.fc2.weight = assign(block.ff.fc2.weight, params[f"model.layers{l}.mlp.up_proj.weight"], f"model.layers{l}.mlp.up_proj.weight")
+            assign(block.ff.fc3.weight,
+                   params[f"model.layers.{l}.mlp.down_proj.weight"],
+                   f"model.layers.{l}.mlp.down_proj.weight")
 
-            block.ff.fc3.weight = assign(block.ff.fc3.weight, params[f"model.layers{l}.mlp.down_proj.weight"], f"model.layers{l}.mlp.down_proj.weight")
+        # ---- LayerNorm 2 ----
+        ln2_key = f"model.layers.{l}.post_attention_layernorm.weight"
+        if hasattr(block, "rms_norm2") and ln2_key in params:
+            assign(block.rms_norm2.weight, params[ln2_key], ln2_key)
 
+    # ---- Final norm ----
+    assign(model.final_norm.weight,
+           params["model.norm.weight"],
+           "model.norm.weight")
 
-
-        if hasattr(block, "rms_norm2"):
-            block.rms_norm2.weight = assign(block.rms_norm2.weight, params[f"model.layers.{l}.post_attention_layernorm.weight"], f"model.layers.{l}.post_attention_layernorm.weight")
-
-    ## final norm and output head
-    model.final_norm.weight = assign(model.final_norm.weight, params["model.norm.weight"], "model.norm.weight")
-
-
+    # ---- Output head ----
     if "lm_head.weight" in params:
-        model.out_head.weight = assign(model.out_head.weight, params["lm_head.weight"], "lm_head.weight")
+        assign(model.out_head.weight,
+               params["lm_head.weight"],
+               "lm_head.weight")
     else:
         model.out_head.weight = model.emb.weight
-        logging.info("Weight tying enabled: output head shares embedding weights")
-
-
-
-
+        logging.info("Weight tying enabled")
 
 
 

@@ -13,7 +13,7 @@ def downlaod_model(repo_id, local_dir):
                         "tokenizer.json",
                         "tokenizer_config.json",
                     ])
-    return downlaod_model
+    return downlaod_path
 
 
 
