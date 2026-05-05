@@ -1,6 +1,7 @@
 
 import sys
 from pathlib import Path
+import json
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -23,7 +24,7 @@ def compute_rope_angles(head_dim, theta_base=10000, context_length=2048, dtype=t
     assert head_dim % 2 == 0, "head_dim must be even"
 
     index = torch.arange(0, head_dim, 2, dtype=dtype)
-    inv_freq = 1.0 / (theta_base ** (2 * index / head_dim))
+    inv_freq = 1.0 / (theta_base ** (index / head_dim))
 
     ## compute positions
     positions = torch.arange(context_length, dtype=dtype) ## we are calculating the positions here  
@@ -42,8 +43,8 @@ def apply_rope(x, cos, sin):
 
     B, T, H, D = x.shape
 
-    x1 = x[..., ::2]   # [B, T, H, D/2]
-    x2 = x[..., 1::2]  # [B, T, H, D/2]
+    x1 = x[..., : D // 2]   # [B, T, H, D/2]
+    x2 = x[..., D // 2 :]   # [B, T, H, D/2]
 
     # Handle both training and inference
     if cos.dim() == 2:  # training
@@ -53,12 +54,10 @@ def apply_rope(x, cos, sin):
         cos = cos[None, None, None, :]       # [1, 1, 1, D/2]
         sin = sin[None, None, None, :]
 
-    x_even = x1 * cos - x2 * sin
-    x_odd  = x1 * sin + x2 * cos
+    x_first = x1 * cos - x2 * sin
+    x_second = x2 * cos + x1 * sin
 
-    x_out = torch.stack([x_even, x_odd], dim=-1).flatten(-2) # (b, t, h, d/2, 2) --> # (b, t, h, d)
-
-    return x_out  # (b, t, h, d)
+    return torch.cat([x_first, x_second], dim=-1)  # (b, t, h, d)
 
 
 ## RMSNorm
@@ -100,11 +99,11 @@ class GroupQueryAttention(nn.Module):
         self.d_out = num_heads * self.h_dim
 
 
-        self.w_query = nn.Linear(self.d_in, self.d_out,  dtype=dtype)  ## (b, t, num_heads * h_dim)
-        self.w_keys = nn.Linear(self.d_in, self.kv_heads * self.h_dim, dtype=dtype)    ## (b, t, kv_heads * h_dim) 
-        self.w_values = nn.Linear(self.d_in, self.kv_heads * self.h_dim, dtype=dtype)  ## (b, t, kv_heads * h_dim)
+        self.w_query = nn.Linear(self.d_in, self.d_out,  dtype=dtype, bias=False)  ## (b, t, num_heads * h_dim)
+        self.w_keys = nn.Linear(self.d_in, self.kv_heads * self.h_dim, dtype=dtype, bias=False)    ## (b, t, kv_heads * h_dim) 
+        self.w_values = nn.Linear(self.d_in, self.kv_heads * self.h_dim, dtype=dtype, bias=False)  ## (b, t, kv_heads * h_dim)
 
-        self.proj_out = nn.Linear(self.d_out, self.d_in, dtype=dtype)   ## (b, t, num_heads * h_dim)
+        self.proj_out = nn.Linear(self.d_out, self.d_in, dtype=dtype, bias=False)   ## (b, t, num_heads * h_dim)
         
 
         self.q_norm = RMSNorm(self.h_dim) ## Normalize per head dimension
@@ -128,6 +127,9 @@ class GroupQueryAttention(nn.Module):
         query = query.view(b, t, self.num_heads, self.h_dim)  ## (b, t, num_heads, h_dim)
         keys_new = keys.view(b, t, self.kv_heads, self.h_dim)    ## (b, t, kv_heads, h_dim)
         values_new = values.view(b, t, self.kv_heads, self.h_dim)   ## (b, t, kv_heads, h_dim)
+
+        query = self.q_norm(query)
+        keys_new = self.k_norm(keys_new)
 
         ## rope
         query = apply_rope(query, cos, sin) ##  rope expects = (b, t, num_heads, d)
@@ -234,8 +236,8 @@ class TransformerBlock(nn.Module):
 
         ## shortcut connection for feed-forward block
         shortcut = x ### (b,t, emb_size)
-        x = self.ff(x)  ## (b,t, emb_size)
         x = self.rms_norm2(x)  ## (b,t, emb_size)
+        x = self.ff(x)  ## (b,t, emb_size)
         ## residual
         x = x + shortcut  ## (b,t, emb_size)
 
@@ -244,98 +246,88 @@ class TransformerBlock(nn.Module):
 
 
 
-## this is the block here ...
+
+
 
 class Qwen3Model(nn.Module):
     def __init__(self, cfg):
         super().__init__()
 
-        self.emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"], dtype=cfg["dtype"])  ## input = (b, t)  ---> (b,t,emb_dim)
-        self.t_block = nn.ModuleList(
-            TransformerBlock(cfg) for _  in range(cfg["n_layers"])  ### (b,t, emb_dim)
+        # Main model parameters
+        self.tok_emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"], dtype=cfg["dtype"])
+
+        self.trf_blocks = nn.ModuleList(  # ModuleList since Sequential can only accept one input, and we need `x, mask, cos, sin`
+            [TransformerBlock(cfg) for _ in range(cfg["n_layers"])]
         )
+        self.final_norm = RMSNorm(cfg["emb_dim"])
+        self.out_head = nn.Linear(cfg["emb_dim"], cfg["vocab_size"], bias=False, dtype=cfg["dtype"])
 
-        self.final_norm = RMSNorm(cfg["emb_dim"])  ## (b,t,emb_dim)  --->  (b,t,emb_dim)
-        self.out_head = nn.Linear(cfg["emb_dim"], cfg["vocab_size"], bias=False, dtype=cfg["dtype"]) ## (b,t, emb) --->  (b,t, vocab_size)
-    
-
-        self.cfg = cfg
-        logging.info("Initializing Qwen3Model vocab_size=%s emb_dim=%s n_layers=%s", cfg["vocab_size"], cfg["emb_dim"], cfg["n_layers"])
-
-        if cfg["head_dim"] is None: 
+        # Reusable utilities
+        if cfg["head_dim"] is None:
             head_dim = cfg["emb_dim"] // cfg["n_heads"]
-        
         else:
             head_dim = cfg["head_dim"]
-
-
-        ## cos, and sin ---for rope
-        cos, sin = compute_rope_angles(head_dim=head_dim, theta_base=cfg["rope_base"], context_length=cfg["context_length"])
-
-
+        cos, sin = compute_rope_angles(
+            head_dim=head_dim,
+            theta_base=cfg["rope_base"],
+            context_length=cfg["context_length"]
+        )
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
+        self.cfg = cfg
+        self.current_pos = 0  # Track current position in KV cache
 
-        self.current_position = 0
-
-    
-    def forward(self, in_ids, cache=None):
-        logging.info("Qwen3Model forward start input_ids=%s cache=%s", in_ids.shape, cache is not None)
-        token_emb = self.emb(in_ids)
-        x = token_emb   ##(b,t,emb_dim)
+    def forward(self, in_idx, cache=None):
+        # Forward pass
+        tok_embeds = self.tok_emb(in_idx)
+        x = tok_embeds
 
         num_tokens = x.shape[1]
-
         if cache is not None:
-            ## inference mode 
-            start_pos = self.current_position
-            end_pos = start_pos + num_tokens
-            self.current_position =  end_pos
-
-            ## create the masks
+            pos_start = self.current_pos
+            pos_end = pos_start + num_tokens
+            self.current_pos = pos_end
             mask = torch.triu(
-                torch.ones(end_pos, end_pos, device=x.device, dtype=torch.bool), diagonal=1,
-            )[start_pos:end_pos, :end_pos]
-            # rows:   start_pos → end_pos   → num_tokens
-            # cols:   0 → end_pos           → total tokens so far
-            # mask.shape = (num_tokens, end_pos)
-            
-            ## For inference, use only the cos/sin for the current positions
-            cos = self.cos[start_pos:end_pos].to(x.device).to(x.dtype)  ## shape: (num_tokens, head_dim//2)
-            sin = self.sin[start_pos:end_pos].to(x.device).to(x.dtype)
-
-        else: ## training mode 
-            start_pos = 0 
+                torch.ones(pos_end, pos_end, device=x.device, dtype=torch.bool), diagonal=1
+            )[pos_start:pos_end, :pos_end]
+        else:
+            pos_start = 0  # Not strictly necessary but helps torch.compile
             mask = torch.triu(
-                torch.ones(num_tokens, num_tokens, device=x.device, dtype=torch.bool), diagonal=1)
-                # (num_tokens, num_tokens)
-            
-            ## For training, use all cos/sin up to num_tokens
-            cos = self.cos[:num_tokens].to(x.device).to(x.dtype)  ## shape: (num_tokens, head_dim//2)
-            sin = self.sin[:num_tokens].to(x.device).to(x.dtype)
+                torch.ones(num_tokens, num_tokens, device=x.device, dtype=torch.bool), diagonal=1
+            )
+        # Prefill (no cache): mask starts as (num_tokens, num_tokens)
+        # Cached decoding: mask starts as (num_tokens, prev_k_number_tokens + num_tokens)
+        #
+        # We add two leading dimensions so the mask becomes
+        # (1, 1, num_tokens, num_tokens) during prefill and
+        # (1, 1, num_tokens, total_key_tokens) during cached decoding.
+        # These extra dimensions let PyTorch broadcast the same mask
+        # across all batches and attention heads when applying it to
+        # attn_scores of shape (batch, num_heads, num_tokens, total_key_tokens).
+        mask = mask[None, None, :, :]  # broadcast mask
 
-        ### broadcast mask
-        mask = mask[None, None, :, :]  ## shape = (1,1,num_tokens,num_tokens) or (1,1,new_tokens, end_pos)
+        # Slice cos/sin for the current token positions
+        cos = self.cos[pos_start:pos_start + num_tokens].to(x.device).to(x.dtype)
+        sin = self.sin[pos_start:pos_start + num_tokens].to(x.device).to(x.dtype)
 
-        for i, block in enumerate(self.t_block):
+        for i, block in enumerate(self.trf_blocks):
             blk_cache = cache.get(i) if cache else None
-
-            ## shape = (b, t, emb_dim)
-            x, new_blk_cache = block(x, mask, cos, sin, cache=blk_cache)
-
-            if cache is not None: 
+            x, new_blk_cache = block(x, mask, cos, sin,
+                                     cache=blk_cache)
+            if cache is not None:
                 cache.update(i, new_blk_cache)
 
-        x = self.final_norm(x) ## shape = (b,t,emb_dim)
+        x = self.final_norm(x)
+        logits = self.out_head(x.to(self.cfg["dtype"]))
+        return logits
 
-        logits = self.out_head(x.to(self.cfg["dtype"]))  ### (b,t,emb_dim)  ---> (b,t, vocab_size)
-        logging.info("Qwen3Model forward end logits=%s", logits.shape)
-        return logits 
-    
     def reset_kv_cache(self):
-        self.current_position = 0  ## must be called, when starting a new independent sequence
-        logging.info("KV cache reset")
-    
+        self.current_pos = 0
+
+
+
+
+
 
 
 ## kv cache 
@@ -355,6 +347,77 @@ class KVCache:
     def reset(self):
         for i in range(len(self.cache)):
             self.cache[i] = None
+
+
+def sample_next_token(logits, temperature=0.6, top_k=20, top_p=0.95):
+    logits = logits.float()
+    if temperature is None or temperature <= 0:
+        return torch.argmax(logits, dim=-1, keepdim=True)
+
+    logits = logits / temperature
+
+    if top_k is not None and top_k > 0:
+        top_k = min(top_k, logits.shape[-1])
+        kth_values = torch.topk(logits, top_k, dim=-1).values[..., -1, None]
+        logits = logits.masked_fill(logits < kth_values, -torch.inf)
+
+    if top_p is not None and 0 < top_p < 1:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+        sorted_probs = torch.softmax(sorted_logits, dim=-1)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+        remove_mask = cumulative_probs > top_p
+        remove_mask[..., 1:] = remove_mask[..., :-1].clone()
+        remove_mask[..., 0] = False
+        sorted_logits = sorted_logits.masked_fill(remove_mask, -torch.inf)
+        logits = torch.full_like(logits, -torch.inf)
+        logits.scatter_(dim=-1, index=sorted_indices, src=sorted_logits)
+
+    probs = torch.softmax(logits, dim=-1)
+    return torch.multinomial(probs, num_samples=1)
+
+
+def generate_text(model, tokenizer, prompt, max_new_tokens=128, temperature=0.6, top_k=20,
+                  top_p=0.95, chat=True, enable_thinking=False):
+    model.eval()
+    if chat:
+        input_ids = tokenizer.encode_chat(
+            prompt,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+    else:
+        input_ids = tokenizer.encode(prompt)
+
+    device = next(model.parameters()).device
+    input_tensor = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
+    cache = KVCache(model.cfg["n_layers"])
+    model.reset_kv_cache()
+    generated_ids = []
+
+    with torch.inference_mode():
+        logits = model(input_tensor, cache=cache)
+        next_token = sample_next_token(
+            logits[:, -1, :],
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+        )
+
+        for _ in range(max_new_tokens):
+            token_id = next_token.item()
+            if token_id in tokenizer.stop_token_ids:
+                break
+
+            generated_ids.append(token_id)
+            logits = model(next_token, cache=cache)
+            next_token = sample_next_token(
+                logits[:, -1, :],
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            )
+
+    return tokenizer.decode(generated_ids, skip_special_tokens=True)
 
 
 
@@ -388,16 +451,17 @@ class Qwen3Tokenizer:
         
         self._tok = Tokenizer.from_file(str(tok_path)) ## loading the tokenizer file--from it's location using Tokenizer from huggingface tokenizers 
         self._special_to_id = {t: self._tok.token_to_id(t) for t in self._SPECIALS}   ## iterating over the _SPECIAL, tokens and storing their ID's in {key:pair} format.
-        self.pad_token = "<|endoftoken|>"   ### this is pad_token
-        self.pad_token_id = self._special_to_id.get(self.pad_token)  ## getting the pad_token ID
+        tokenizer_config = self._load_tokenizer_config(tok_path)
+        self.pad_token = tokenizer_config.get("pad_token", "<|endoftext|>")
+        self.pad_token_id = self._tok.token_to_id(self.pad_token)
 
-        ## match hf behaviour: chat_model --> <|im_end|>, base_model --> <|endoftext|> 
-        fname = tok_path.name.lower()   ## lowering the path name
-        if "base" in fname and "reasoning" not in fname:  ## if it's a "base" model and not "reasoning" modlel then it's "end of text"
-            self.eos_token = "<|endoftext|>"
-        else: 
-            self.eos_token = "<|im_end|>"     ### otherwise "im end" 
-        self.eos_token_id = self._special_to_id.get(self.eos_token)  ## getting the precomputed token id
+        self.eos_token = tokenizer_config.get("eos_token", "<|im_end|>")
+        self.eos_token_id = self._tok.token_to_id(self.eos_token)
+        self.endoftext_token_id = self._tok.token_to_id("<|endoftext|>")
+        self.stop_token_ids = {
+            token_id for token_id in (self.eos_token_id, self.endoftext_token_id)
+            if token_id is not None
+        }
 
 
 
@@ -427,17 +491,35 @@ class Qwen3Tokenizer:
         return  Ids
     
 
-    def decode(self, token_ids):
-        return self._tok.decode(token_ids, skip_special_tokens=False)    ## decoding Id's--back to text and also keeping the special specials...
+    def decode(self, token_ids, skip_special_tokens=False):
+        return self._tok.decode(token_ids, skip_special_tokens=skip_special_tokens)    ## decoding Id's--back to text
 
-    def _wrap_chat(self, user_msg):
+    def encode_chat(self, user_msg, add_generation_prompt=True, enable_thinking=False):
+        prompt = self._wrap_chat(
+            user_msg,
+            add_generation_prompt=add_generation_prompt,
+            enable_thinking=enable_thinking,
+        )
+        return self.encode(prompt, chat_wrapped=False)
+
+    def _load_tokenizer_config(self, tok_path):
+        config_path = tok_path.with_name("tokenizer_config.json")
+        if not config_path.is_file():
+            return {}
+        with config_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _wrap_chat(self, user_msg, add_generation_prompt=None, enable_thinking=None):
+        if add_generation_prompt is None:
+            add_generation_prompt = self.add_generation_prompt
+        if enable_thinking is None:
+            enable_thinking = self.add_thinking
+
         s = f"<|im_start|>user\n{user_msg}<|im_end|>\n"
-        if self.add_generation_prompt:
-            s += "<|im_start|>assistant"
-            if self.add_thinking: ## true
-                s += "\n" ##  no thinking tags,,,  only new line..and let model generate freely
-            else: ##false
-                s += "\n<think>\n\n</think>\n\n"   ## add the thinking tags--and force the model to think inside tags... etc
+        if add_generation_prompt:
+            s += "<|im_start|>assistant\n"
+            if not enable_thinking:
+                s += "<think>\n\n</think>\n\n"
 
         return s
 
@@ -448,117 +530,140 @@ import logging
 from pathlib import Path
 from safetensors.torch import load_file
 
-
 def load_hf_weights_into_qwen(model, param_config, params):
-
+    """
+    Load HuggingFace model weights into Qwen3Model.
+    Supports both model variants (tok_emb/trf_blocks and emb/t_block).
+    """
     def assign(left, right, tensor_name="unknown"):
         if left.shape != right.shape:
-            print(f"Skipping {tensor_name} due to shape mismatch: "
-                  f"{left.shape} vs {right.shape}")
-            return
+            raise ValueError(f"Shape mismatch in tensor '{tensor_name}'. Left: {left.shape}, Right: {right.shape}")
 
         with torch.no_grad():
-            left.copy_(right)
+            if isinstance(right, torch.Tensor):
+                left.copy_(right)
+            else:
+                left.copy_(torch.as_tensor(right, dtype=left.dtype, device=left.device))
 
-    # ---- Embedding ----
-    assign(
-        model.emb.weight,
-        params["model.embed_tokens.weight"],
-        "model.embed_tokens.weight"
-    )
+        return left
 
-    # ---- Transformer blocks ----
-    for l in range(param_config["n_layers"]):
-        block = model.t_block[l]
+    # Handle both model attribute naming conventions
+    emb_layer = model.emb if hasattr(model, 'emb') else model.tok_emb
+    blocks_layer = model.t_block if hasattr(model, 't_block') else model.trf_blocks
+    
+    emb_layer.weight = assign(emb_layer.weight, params["model.embed_tokens.weight"], "model.embed_tokens.weight")
+
+    for l in range(param_config["n_layers"]):  # noqa: E741
+        block = blocks_layer[l]
         att = block.att
 
-        # ---- Attention ----
-        assign(att.w_query.weight,
-               params[f"model.layers.{l}.self_attn.q_proj.weight"],
-               f"model.layers.{l}.self_attn.q_proj.weight")
+        # Q, K, V projections
+        att.w_query.weight = assign(
+            att.w_query.weight,
+            params[f"model.layers.{l}.self_attn.q_proj.weight"],
+            f"model.layers.{l}.self_attn.q_proj.weight"
+        )
+        att.w_keys.weight = assign(
+            att.w_keys.weight,
+            params[f"model.layers.{l}.self_attn.k_proj.weight"],
+            f"model.layers.{l}.self_attn.k_proj.weight"
+        )
+        att.w_values.weight = assign(
+            att.w_values.weight,
+            params[f"model.layers.{l}.self_attn.v_proj.weight"],
+            f"model.layers.{l}.self_attn.v_proj.weight"
+        )
 
-        assign(att.w_keys.weight,
-               params[f"model.layers.{l}.self_attn.k_proj.weight"],
-               f"model.layers.{l}.self_attn.k_proj.weight")
+        # Output projection
+        att.proj_out.weight = assign(
+            att.proj_out.weight,
+            params[f"model.layers.{l}.self_attn.o_proj.weight"],
+            f"model.layers.{l}.self_attn.o_proj.weight"
+        )
 
-        assign(att.w_values.weight,
-               params[f"model.layers.{l}.self_attn.v_proj.weight"],
-               f"model.layers.{l}.self_attn.v_proj.weight")
+        # QK norms
+        if hasattr(att, "q_norm") and att.q_norm is not None:
+            att.q_norm.weight = assign(
+                att.q_norm.weight,
+                params[f"model.layers.{l}.self_attn.q_norm.weight"],
+                f"model.layers.{l}.self_attn.q_norm.weight"
+            )
+        if hasattr(att, "k_norm") and att.k_norm is not None:
+            att.k_norm.weight = assign(
+                att.k_norm.weight,
+                params[f"model.layers.{l}.self_attn.k_norm.weight"],
+                f"model.layers.{l}.self_attn.k_norm.weight"
+            )
 
-        assign(att.proj_out.weight,
-               params[f"model.layers.{l}.self_attn.o_proj.weight"],
-               f"model.layers.{l}.self_attn.o_proj.weight")
+        # Attention layernorm
+        block.rms_norm1.weight = assign(
+            block.rms_norm1.weight,
+            params[f"model.layers.{l}.input_layernorm.weight"],
+            f"model.layers.{l}.input_layernorm.weight"
+        )
 
-        # ---- Optional norms (SAFE LOAD) ----
-        q_key = f"model.layers.{l}.self_attn.q_norm.weight"
-        if hasattr(att, "q_norm") and att.q_norm is not None and q_key in params:
-            assign(att.q_norm.weight, params[q_key], q_key)
-
-        k_key = f"model.layers.{l}.self_attn.k_norm.weight"
-        if hasattr(att, "k_norm") and att.k_norm is not None and k_key in params:
-            assign(att.k_norm.weight, params[k_key], k_key)
-
-        # ---- LayerNorm 1 ----
-        ln1_key = f"model.layers.{l}.input_layernorm.weight"
-        if hasattr(block, "rms_norm1") and ln1_key in params:
-            assign(block.rms_norm1.weight, params[ln1_key], ln1_key)
-
-        # ---- Feedforward ----
+        # Feedforward weights
         if "num_experts" in param_config:
-            # Router
-            gate_key = f"model.layers.{l}.mlp.gate.weight"
-            if gate_key in params:
-                assign(block.ff.gate.weight, params[gate_key], gate_key)
-
-            # Experts
+            # Load router (gating) weights
+            block.ff.gate.weight = assign(
+                block.ff.gate.weight,
+                params[f"model.layers.{l}.mlp.gate.weight"],
+                f"model.layers.{l}.mlp.gate.weight"
+            )
+            # Load expert weights
             for e in range(param_config["num_experts"]):
                 prefix = f"model.layers.{l}.mlp.experts.{e}"
-
-                assign(block.ff.fc1[e].weight,
-                       params.get(f"{prefix}.gate_proj.weight", torch.empty(0)),
-                       f"{prefix}.gate_proj.weight")
-
-                assign(block.ff.fc2[e].weight,
-                       params.get(f"{prefix}.up_proj.weight", torch.empty(0)),
-                       f"{prefix}.up_proj.weight")
-
-                assign(block.ff.fc3[e].weight,
-                       params.get(f"{prefix}.down_proj.weight", torch.empty(0)),
-                       f"{prefix}.down_proj.weight")
+                block.ff.fc1[e].weight = assign(
+                    block.ff.fc1[e].weight,
+                    params[f"{prefix}.gate_proj.weight"],
+                    f"{prefix}.gate_proj.weight"
+                )
+                block.ff.fc2[e].weight = assign(
+                    block.ff.fc2[e].weight,
+                    params[f"{prefix}.up_proj.weight"],
+                    f"{prefix}.up_proj.weight"
+                )
+                block.ff.fc3[e].weight = assign(
+                    block.ff.fc3[e].weight,
+                    params[f"{prefix}.down_proj.weight"],
+                    f"{prefix}.down_proj.weight"
+                )
+                # After assigning weights, move the expert layers from meta to CPU
+                block.ff.fc1[e] = block.ff.fc1[e].to("cpu")
+                block.ff.fc2[e] = block.ff.fc2[e].to("cpu")
+                block.ff.fc3[e] = block.ff.fc3[e].to("cpu")
 
         else:
-            assign(block.ff.fc1.weight,
-                   params[f"model.layers.{l}.mlp.gate_proj.weight"],
-                   f"model.layers.{l}.mlp.gate_proj.weight")
+            block.ff.fc1.weight = assign(
+                block.ff.fc1.weight,
+                params[f"model.layers.{l}.mlp.gate_proj.weight"],
+                f"model.layers.{l}.mlp.gate_proj.weight"
+            )
+            block.ff.fc2.weight = assign(
+                block.ff.fc2.weight,
+                params[f"model.layers.{l}.mlp.up_proj.weight"],
+                f"model.layers.{l}.mlp.up_proj.weight"
+            )
+            block.ff.fc3.weight = assign(
+                block.ff.fc3.weight,
+                params[f"model.layers.{l}.mlp.down_proj.weight"],
+                f"model.layers.{l}.mlp.down_proj.weight"
+            )
 
-            assign(block.ff.fc2.weight,
-                   params[f"model.layers.{l}.mlp.up_proj.weight"],
-                   f"model.layers.{l}.mlp.up_proj.weight")
+        block.rms_norm2.weight = assign(
+            block.rms_norm2.weight,
+            params[f"model.layers.{l}.post_attention_layernorm.weight"],
+            f"model.layers.{l}.post_attention_layernorm.weight"
+        )
 
-            assign(block.ff.fc3.weight,
-                   params[f"model.layers.{l}.mlp.down_proj.weight"],
-                   f"model.layers.{l}.mlp.down_proj.weight")
+    # Final normalization and output head
+    model.final_norm.weight = assign(model.final_norm.weight, params["model.norm.weight"], "model.norm.weight")
 
-        # ---- LayerNorm 2 ----
-        ln2_key = f"model.layers.{l}.post_attention_layernorm.weight"
-        if hasattr(block, "rms_norm2") and ln2_key in params:
-            assign(block.rms_norm2.weight, params[ln2_key], ln2_key)
-
-    # ---- Final norm ----
-    assign(model.final_norm.weight,
-           params["model.norm.weight"],
-           "model.norm.weight")
-
-    # ---- Output head ----
     if "lm_head.weight" in params:
-        assign(model.out_head.weight,
-               params["lm_head.weight"],
-               "lm_head.weight")
+        model.out_head.weight = assign(model.out_head.weight, params["lm_head.weight"], "lm_head.weight")
     else:
-        model.out_head.weight = model.emb.weight
-        logging.info("Weight tying enabled")
-
-
+        model.out_head.weight = emb_layer.weight
+        print("Model uses weight tying.")
 
 
 

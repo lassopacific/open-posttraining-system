@@ -1,7 +1,7 @@
 import os
 from huggingface_hub import snapshot_download
 
-def downlaod_model(repo_id, local_dir):
+def downlaod_model(repo_id="Qwen/Qwen3-0.6B", local_dir="qwen"):
     os.makedirs(local_dir, exist_ok=True)
 
 
@@ -15,9 +15,5 @@ def downlaod_model(repo_id, local_dir):
                     ])
     return downlaod_path
 
-
-
-downlaod_model(
-    repo_id="Qwen/Qwen3-0.6B-Base",
-    local_dir="qwen",
-    )
+if __name__ == "__main__":
+    downlaod_model()
