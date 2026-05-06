@@ -115,7 +115,7 @@ class GroupQueryAttention(nn.Module):
 
 
 
-    def forward(self, x, cos, sin, mask, cache=None, cache_pos=None, max_seq_len=None, is_causal=False):
+    def forward(self, x, cos, sin, mask, cache=None):
         b, t, _ = x.shape
 
         logging.debug("GQA forward b=%s t=%s cache=%s", b, t, cache is not None)
@@ -140,58 +140,36 @@ class GroupQueryAttention(nn.Module):
         keys_new = keys_new.transpose(1,2)  ## (b, kv_heads, t, d)
         values_new = values_new.transpose(1,2)  ## (b, kv_heads, t, d)
 
-        if cache_pos is not None:
-            pos_start, pos_end = cache_pos
-            if cache is None:
-                alloc_len = max(max_seq_len or pos_end, pos_end)
-                cache = {
-                    "keys": keys_new.new_empty(b, self.kv_heads, alloc_len, self.h_dim),
-                    "values": values_new.new_empty(b, self.kv_heads, alloc_len, self.h_dim),
-                }
-            elif pos_end > cache["keys"].shape[2]:
-                alloc_len = max(cache["keys"].shape[2] * 2, pos_end)
-                new_keys = keys_new.new_empty(b, self.kv_heads, alloc_len, self.h_dim)
-                new_values = values_new.new_empty(b, self.kv_heads, alloc_len, self.h_dim)
-                new_keys[:, :, :pos_start, :] = cache["keys"][:, :, :pos_start, :]
-                new_values[:, :, :pos_start, :] = cache["values"][:, :, :pos_start, :]
-                cache = {"keys": new_keys, "values": new_values}
-            keys_cache = cache["keys"]
-            values_cache = cache["values"]
-            keys_cache[:, :, pos_start:pos_end, :] = keys_new
-            values_cache[:, :, pos_start:pos_end, :] = values_new
-            keys = keys_cache[:, :, :pos_end, :]
-            values = values_cache[:, :, :pos_end, :]
+        ## cache 
+        ## expects ---> (b, kv_heads, t, d)
+        if cache is not None: 
+            prev_k, prev_v = cache 
+            keys = torch.cat([prev_k, keys_new], dim=2)  ## keys_new.shape == (b, kv_heads, t, d), prev_k.shape == (b, kv_heads, t, d ) ----> keys_new = (b,kv_heads, prev_k + t, d)
+            values = torch.cat([prev_v, values_new], dim=2)   ## values_new.shape == (b, kv_heads, t, d), prev_v.shape == (b, kv_heads, t, d) ----> keys_new = (b, kv_heads, prev_v + t, d)
+
         else: 
             keys, values = keys_new, values_new  ## (b, kv_heads, t, d)
-            
-        next_cache = cache if cache is not None else (keys, values)
+        next_cache = (keys, values)   ## tuple((b, kv_heads, t, d), (b, kv_heads, t, d))
 
-        if hasattr(F, "scaled_dot_product_attention"):
-            # PyTorch's SDPA uses True for allowed positions; our mask uses True for blocked positions.
-            context = F.scaled_dot_product_attention(
-                query,
-                keys,
-                values,
-                attn_mask=None if mask is None else ~mask,
-                dropout_p=0.0,
-                scale=self.h_dim ** -0.5,
-                is_causal=is_causal,
-                enable_gqa=self.group_size != 1,
-            )
-        else:
-            keys = torch.repeat_interleave(keys, self.group_size, dim=1)  ## (b, num_heads, t, d)
-            values = torch.repeat_interleave(values, self.group_size, dim=1)  ## (b, num_heads, t, d)
-            attn_scores = query @ keys.transpose(2, 3)  ## (b, num_heads, t, total_key_tokens)
-            attn_scores = attn_scores / (self.h_dim ** 0.5)
-            if mask is None:
-                if is_causal:
-                    mask = torch.triu(
-                        torch.ones(t, keys.shape[2], device=x.device, dtype=torch.bool), diagonal=1
-                    )[None, None, :, :]
-            if mask is not None:
-                attn_scores = attn_scores.masked_fill(mask, -torch.inf)
-            attn_weights = torch.softmax(attn_scores, dim=-1)
-            context = attn_weights @ values
+        ## getting back the num_heads shape... 
+        keys = torch.repeat_interleave(keys, self.group_size, dim=1)  ## (b, num_heads, t, d)
+        values = torch.repeat_interleave(values, self.group_size, dim=1)  ## (b, num_heads, t, d)
+
+
+        ## attention
+        attn_scores = query @ keys.transpose(2, 3)  ## query = (b, num_heads, t, d) --- keys = (b, num_heads, d, t)  ---> attn_scores = (b, num_heads, t, t)
+
+        ## scale logits
+        attn_scores = attn_scores / (self.h_dim ** 0.5)   ## (b, num_heads, t, t)
+
+        ## apply mask
+        attn_scores = attn_scores.masked_fill(mask, -torch.inf)   ## (b, num_heads, t, t)
+ 
+        ## softmax
+        attn_weights = torch.softmax(attn_scores, dim=-1)  ## (b, num_heads, t, t) ## taking softmax --horizontally over keys or column (like from left to right)
+
+        ## applying attention to values
+        context = attn_weights @ values   ## attn_weights = (b, num_heads, t, t) --- values = (b, num_heads, t, d) ---> context = (b, num_heads, t, d)
 
         ## merge heads
         context = context.transpose(1, 2) ## (b, t, num_heads, d)
@@ -249,14 +227,11 @@ class TransformerBlock(nn.Module):
         self.rms_norm2 = RMSNorm(cfg["emb_dim"])
 
 
-    def forward(self, x, mask, cos, sin, cache=None, cache_pos=None, max_seq_len=None, is_causal=False):
+    def forward(self, x, mask, cos, sin, cache=None):
         ## x = (b,t,d_model)
         shortcut = x
         x = self.rms_norm1(x)  ## (b,t,D)
-        x, next_cache = self.att(
-            x, cos, sin, mask, cache=cache, cache_pos=cache_pos,
-            max_seq_len=max_seq_len, is_causal=is_causal
-        )  ##   (b,t, emb_size)
+        x, next_cache = self.att(x, cos, sin, mask, cache=cache)  ##   (b,t, emb_size)
         x = x + shortcut
 
         ## shortcut connection for feed-forward block
@@ -312,32 +287,16 @@ class Qwen3Model(nn.Module):
             pos_start = self.current_pos
             pos_end = pos_start + num_tokens
             self.current_pos = pos_end
-            if num_tokens == 1:
-                mask = None
-                is_causal = False
-            elif pos_start == 0:
-                mask = None
-                is_causal = True
-            else:
-                query_positions = torch.arange(pos_start, pos_end, device=x.device)
-                key_positions = torch.arange(pos_end, device=x.device)
-                mask = key_positions[None, :] > query_positions[:, None]
-                is_causal = False
+            query_positions = torch.arange(pos_start, pos_end, device=x.device)
+            key_positions = torch.arange(pos_end, device=x.device)
+            mask = key_positions[None, :] > query_positions[:, None]
         else:
             pos_start = 0  # Not strictly necessary but helps torch.compile
-            mask = None
-            is_causal = True
-        # Prefill (no cache): mask starts as (num_tokens, num_tokens)
-        # Cached decoding: mask starts as (num_tokens, prev_k_number_tokens + num_tokens)
-        #
-        # We add two leading dimensions so the mask becomes
-        # (1, 1, num_tokens, num_tokens) during prefill and
-        # (1, 1, num_tokens, total_key_tokens) during cached decoding.
-        # These extra dimensions let PyTorch broadcast the same mask
-        # across all batches and attention heads when applying it to
-        # attn_scores of shape (batch, num_heads, num_tokens, total_key_tokens).
-        if mask is not None:
-            mask = mask[None, None, :, :]  # broadcast mask
+            mask = torch.triu(
+                torch.ones(num_tokens, num_tokens, device=x.device, dtype=torch.bool), diagonal=1
+            )
+   
+        mask = mask[None, None, :, :]  # broadcast mask
 
         # Slice cos/sin for the current token positions
         cos = self.cos[pos_start:pos_start + num_tokens].to(x.device).to(x.dtype)
@@ -346,10 +305,7 @@ class Qwen3Model(nn.Module):
         for i, block in enumerate(self.trf_blocks):
             blk_cache = cache.get(i) if cache else None
             x, new_blk_cache = block(x, mask, cos, sin,
-                                     cache=blk_cache,
-                                     cache_pos=(pos_start, pos_end) if cache is not None else None,
-                                     max_seq_len=cache.max_seq_len if cache is not None else None,
-                                     is_causal=is_causal)
+                                     cache=blk_cache)
             if cache is not None:
                 cache.update(i, new_blk_cache)
 
@@ -368,33 +324,14 @@ class Qwen3Model(nn.Module):
 
 ## kv cache 
 class KVCache:
-    def __init__(self, n_layers, max_seq_len=2048, device=None, dtype=torch.float32):
-        """
-        Per-layer KV cache used during autoregressive decoding.
-        
-        Args:
-            n_layers: Number of transformer layers
-            max_seq_len: Maximum sequence length metadata
-            device: Device metadata for future cache allocation
-            dtype: Data type metadata for future cache allocation
-        """
-        self.n_layers = n_layers
+    def __init__(self, n_layers):
         self.cache = [None] * n_layers
-        self.cache_len = 0  # Track current position in cache
-        self.max_seq_len = max_seq_len
-        self.device = device
-        self.dtype = dtype
-        self._alloc_size = None  # Will be set on first use
 
     def get(self, layer_idx):
         return self.cache[layer_idx]
     
     def update(self, layer_idx, value):
         self.cache[layer_idx] = value
-        
-    def update_seq_len(self, new_len):
-        """Update the current sequence length tracking"""
-        self.cache_len = new_len
 
     def get_all(self):
         return self.cache
@@ -402,7 +339,6 @@ class KVCache:
     def reset(self):
         for i in range(len(self.cache)):
             self.cache[i] = None
-        self.cache_len = 0
 
 
 def sample_next_token(logits, temperature=0.6, top_k=20, top_p=0.95):
@@ -446,7 +382,7 @@ def generate_text(model, tokenizer, prompt, max_new_tokens=128, temperature=0.6,
 
     device = next(model.parameters()).device
     input_tensor = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
-    cache = KVCache(model.cfg["n_layers"], max_seq_len=input_tensor.shape[1] + max_new_tokens)
+    cache = KVCache(model.cfg["n_layers"])
     model.reset_kv_cache()
     generated_ids = []
 
@@ -459,15 +395,12 @@ def generate_text(model, tokenizer, prompt, max_new_tokens=128, temperature=0.6,
             top_p=top_p,
         )
 
-        for step in range(max_new_tokens):
+        for _ in range(max_new_tokens):
             token_id = next_token.item()
             if token_id in tokenizer.stop_token_ids:
                 break
 
             generated_ids.append(token_id)
-            if step == max_new_tokens - 1:
-                break
-
             logits = model(next_token, cache=cache)
             next_token = sample_next_token(
                 logits[:, -1, :],
