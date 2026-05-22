@@ -211,3 +211,4 @@ qwen/
 log/
 
 my_env/
+evaluating_reasoning_models/math500_test.json/
