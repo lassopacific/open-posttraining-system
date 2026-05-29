@@ -17,7 +17,7 @@ from base_model.qwen import (
 )
 
 
-def main(prompt):
+def generate_token_streams(prompt):
     model_dir = Path(__file__).resolve().parent / "qwen"
     tokenizer = Qwen3Tokenizer(model_dir / "tokenizer.json")
     weights = load_file(model_dir / "model.safetensors")
@@ -49,4 +49,4 @@ def main(prompt):
 
 
 if __name__ == "__main__":
-    main("what is ai")
+    generate_token_streams("what is ai")

@@ -212,3 +212,4 @@ log/
 
 my_env/
 evaluating_reasoning_models/math500_test.json/
+improving_reasoning_with_inference_time_scaling/qwen
