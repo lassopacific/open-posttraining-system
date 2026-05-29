@@ -8,7 +8,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 @torch.inference_mode()
-def generate_text_stream_with_kv_cache(prompt, model, tokenizer, device, max_new_tokens, eos_token_id, **kwargs):
+def generate_text_stream_with_kv_cache(prompt, model, tokenizer, device, max_new_tokens, eos_token_id):
     # Encode prompt and move to device
     input_ids = torch.tensor(tokenizer.encode(prompt), device=device).unsqueeze(0)
 
