@@ -8,7 +8,15 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 @torch.inference_mode()
-def generate_text_stream_with_kv_cache(prompt, model, tokenizer, device, max_new_tokens, eos_token_id):
+def generate_text_stream_with_kv_cache(
+    prompt,
+    model,
+    tokenizer,
+    device,
+    max_new_tokens,
+    eos_token_id,
+    temperature=0.0,
+):
     # Encode prompt and move to device
     input_ids = torch.tensor(tokenizer.encode(prompt), device=device).unsqueeze(0)
 
@@ -25,8 +33,14 @@ def generate_text_stream_with_kv_cache(prompt, model, tokenizer, device, max_new
     # Autoregressive generation loop
     for _ in range(max_new_tokens):
 
-        # Greedy decoding
-        next_token = torch.argmax(logits,dim=-1,keepdim=True)
+        if temperature is None or temperature == 0.0:
+            # Greedy decoding
+            next_token = torch.argmax(logits, dim=-1, keepdim=True)
+        else:
+            # Apply temperature scaling and sample
+            scaled_logits = logits / temperature
+            probs = torch.softmax(scaled_logits, dim=-1)
+            next_token = torch.multinomial(probs.cpu(), num_samples=1).to(device)
 
         # Stop if EOS token is generated
         if (eos_token_id is not None and torch.all(next_token == eos_token_id)):
