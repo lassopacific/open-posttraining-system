@@ -1,5 +1,4 @@
 # Open Post Training
-*this repository will be structured properly in coming days, ...on-it⚠️
 
 An open-source research engineering project focused on the post-training stack for large language models: supervised fine-tuning, preference optimization, reinforcement learning, reasoning behaviors, evaluation, and scalable inference systems.
 
