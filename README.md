@@ -50,6 +50,67 @@ Only accept tokens that exceed a minimum confidence threshold, allowing for earl
 
 ---
 
+## 📊 Key Experimental Findings
+
+### Benchmark Results (MATH-500)
+
+We evaluated multiple inference-time strategies on the MATH-500 mathematical reasoning dataset:
+
+#### Setup: First 20 Problems from MATH-500
+- **Hardware:** Tesla T4 GPU
+- **Model:** Qwen-7B (base and reasoning variants)
+- **Prompt:** Chain-of-Thought with mathematical problem template
+- **Metrics:** Accuracy, runtime, computational cost
+
+#### Results
+
+| Model | Strategy | Samples | Accuracy | Runtime | Cost vs Baseline |
+|-------|----------|---------|----------|---------|------------------|
+| **Base** | Greedy CoT | 1 | **15.0%** (3/20) | ~5.8 min | 1x (baseline) |
+| **Base** | CoT + Self-Consistency (K=7) | 7 | **20.0%** (4/20) | ~36.6 min | **6.3x** |
+| **Reasoning** | Greedy CoT | 1 | **15.0%** (3/20) | ~5.8 min | 1x |
+
+### Critical Insights
+
+**1. Self-Consistency Shows Limited Gains**
+- Self-consistency voting improved accuracy from 15% to 20% (+5 percentage points)
+- However, this required **6.3x more inference time** (5.8 min → 36.6 min)
+- **Trade-off:** One additional correct answer required ~31 extra minutes of computation
+
+**2. Inference-Time Scaling Cannot Create Reasoning Skills**
+- The reasoning model generated substantially longer reasoning traces (~493 tokens average)
+- Despite longer traces, accuracy **remained at 15%** on single-sample evaluation
+- This demonstrates that **inference-time techniques amplify existing capabilities but cannot create new reasoning abilities**
+
+**3. Prompt Templates Have Major Impact**
+- Different prompt formats showed significant variations in results
+- The standard format used achieved 15-20% accuracy
+- Alternative templates in the notebook showed different performance characteristics
+- **Implication:** Prompt engineering is critical but not sufficient without underlying model capability
+
+### Lessons for Post-Training
+
+These experiments highlight a fundamental limitation:
+> **Inference-time scaling is not a substitute for training-time reasoning improvement.**
+
+The techniques explored (CoT, self-consistency, temperature scaling) work by:
+- Amplifying existing problem-solving distributions in the model
+- Taking majority votes over multiple attempts
+- Encouraging more explicit reasoning
+
+But they **cannot**:
+- Create reasoning skills not already in the model
+- Overcome fundamental capability gaps
+- Solve problems the model couldn't solve in any single attempt
+
+**For meaningful improvements in mathematical reasoning, focus should be on post-training methods:**
+- Supervised fine-tuning on curated reasoning examples
+- Preference optimization (DPO/ORPO/SimPO)
+- Reinforcement learning with mathematical correctness rewards
+- Reasoning-specific architectural modifications
+
+---
+
 ## Core Areas
 
 * Supervised Fine-Tuning (SFT)
@@ -60,6 +121,8 @@ Only accept tokens that exceed a minimum confidence threshold, allowing for earl
 * Dataset construction and filtering
 * Scalable training and inference systems
 * Open-weight reasoning model experimentation
+
+---
 
 ## Long-Term Vision
 

@@ -59,6 +59,76 @@ Optimized results: CoT with self-consistency (K=5 samples) on MATH500 dataset.
 - Medium models (7B): +8-15% accuracy
 - Large models (13B+): +10-20% accuracy
 
+## Actual Experimental Results
+
+### Main Findings from MATH-500 Evaluation
+
+**Experiment 1: Base Model - CoT + Greedy (Single Sample)**
+- Dataset: MATH-500, first 20 problems
+- Configuration: Temperature=0.2, Top-p=0.9, Max tokens=2048
+- **Result: 3/20 correct (15.0%)**
+- Runtime: ~5.8 minutes on Tesla T4 GPU
+
+**Experiment 2: Base Model - CoT + Self-Consistency (K=7 Samples)**
+- Dataset: MATH-500, first 20 problems
+- Configuration: Temperature=0.2, Top-p=0.9, K=7 samples, Max tokens=2048
+- **Result: 4/20 correct (20.0%)**
+- Runtime: ~36.6 minutes on Tesla T4 GPU
+- **Improvement: +1 additional correct answer (+5 percentage points)**
+- **Cost increase: 6.3x more inference time**
+
+**Experiment 3: Reasoning Model - CoT + Greedy (Single Sample)**
+- Dataset: MATH-500, first 20 problems
+- Configuration: Temperature=0.2, Top-p=0.9, Max tokens=2048
+- **Result: 3/20 correct (15.0%)**
+- Runtime: ~5.8 minutes on Tesla T4 GPU
+- **Average reasoning trace length: ~493 tokens (vs. baseline)**
+- **Key observation:** Longer reasoning did NOT improve single-sample accuracy
+
+### Critical Insights
+
+**1. Self-Consistency Effectiveness is Limited**
+```
+Baseline (Greedy):           15.0% accuracy,  5.8 minutes
+With Self-Consistency (K=7): 20.0% accuracy, 36.6 minutes
+Gain: +5.0 percentage points for 6.3x cost increase
+```
+
+This demonstrates that self-consistency can recover answers that already exist within the model's reasoning distribution, but cannot create new reasoning capabilities. The model simply couldn't solve problems it previously couldn't solve, even with 7 diverse reasoning paths.
+
+**2. Reasoning Model Generates Longer Traces But No Accuracy Improvement**
+
+The reasoning model produced substantially longer reasoning chains (~493 tokens) compared to the base model. However, this increase in reasoning verbosity **did not translate to higher accuracy** on a single-sample basis (both 15.0%).
+
+This suggests:
+- Extended reasoning traces don't guarantee better problem-solving
+- The model may be generating plausible-sounding but incorrect reasoning
+- The fundamental reasoning capability is limited, not the verbosity
+
+**3. Inference-Time Scaling Cannot Compensate for Lack of Reasoning Ability**
+
+Key finding from these experiments:
+> **Inference-time scaling techniques (CoT + self-consistency) can amplify existing reasoning capabilities, but cannot create reasoning skills absent in the model.**
+
+**Implications:**
+- If a base model can't solve a problem, voting over 7 attempts to the same wrong reasoning won't help
+- Meaningful improvements in mathematical reasoning require **post-training methods** such as:
+  - Supervised fine-tuning on correct reasoning examples
+  - Preference optimization (DPO/ORPO/SimPO)
+  - Reinforcement learning with better reward signals
+
+### Computational Cost Analysis
+
+| Technique | Samples | Base Accuracy | Final Accuracy | Time per 20 problems | Cost Multiplier |
+|-----------|---------|---------------|-----------------|---------------------|-----------------|
+| Greedy CoT | 1 | - | 15.0% | 5.8 min | 1x |
+| CoT + SC (K=7) | 7 | 15.0% | 20.0% | 36.6 min | 6.3x |
+
+**Cost-benefit analysis:**
+- To improve from 15% to 20% (3→4 correct on 20 problems), you pay **~31 additional minutes** of inference
+- That's **~31 minutes per 1 additional correct answer**
+- For production systems, this may not be worth the cost unless accuracy is extremely critical
+
 ## Core Concepts
 
 ### 1. Chain-of-Thought (CoT) Prompting
