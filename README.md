@@ -98,6 +98,170 @@ This project aims to evolve into a modular end-to-end post-training framework fo
 * Reproduce influential papers and training recipes
 * Build scalable experimentation workflows
 * Develop intuition for reasoning and alignment systems
+
+---
+
+## 📁 Repository Structure & Navigation Guide
+
+This section guides new users through the repository structure and how to navigate the project.
+
+### **1. `base_model/` - Custom Model Architecture**
+**What it does:** This folder contains the custom architecture code for building your own language model from scratch.
+
+**Key workflow:**
+- Download pre-trained weights from Hugging Face (via the `downloading_the_base_model/` folder)
+- Define your custom model architecture
+- Load the downloaded weights into your custom architecture
+- Use this as the foundation for all downstream tasks (fine-tuning, inference, evaluation)
+
+**Contains:** Architecture definitions, model initialization code, and weight loading utilities
+- `qwen.py` - Custom Qwen model implementation
+- `qwen.ipynb` - Jupyter notebook demonstrating model architecture
+
+**When to use:** Start here if you want to understand how to build custom architectures and load pre-trained weights
+
+👉 See [base_model/README.md](base_model/README.md) for detailed documentation
+
+---
+
+### **2. `downloading_the_base_model/` - Model Download Pipeline**
+**What it does:** Handles downloading pre-trained models from Hugging Face Hub and managing model versioning.
+
+**Key workflow:**
+- Download models directly from Hugging Face
+- Cache models locally for efficient reuse
+- Handle model metadata and configuration files
+- Prepare models for use in custom architectures
+
+**Contains:** Download utilities, caching mechanisms, and model fetching scripts
+- `download_model.py` - Main script for downloading models from Hugging Face Hub
+
+**When to use:** Run this first in your workflow to download the base model weights before building custom architectures
+
+**Example:** Download a Qwen model before loading it into your custom architecture
+
+👉 See [downloading_the_base_model/README.md](downloading_the_base_model/README.md) for detailed documentation
+
+---
+
+### **3. `evaluating_reasoning_models/` - Model Evaluation & Benchmarking**
+**What it does:** Comprehensive evaluation framework for assessing reasoning capabilities of language models.
+
+**Key workflow:**
+- Load your model and tokenizer
+- Evaluate on reasoning benchmarks (e.g., MATH500)
+- Measure accuracy, correctness, and reasoning quality
+- Generate evaluation reports and statistics
+- Compare inference strategies (greedy, self-consistency, etc.)
+
+**Contains:** Evaluation scripts, benchmark datasets, and metrics calculation
+- `math500_test.json` - MATH500 benchmark test set
+- `evaluating_reasoning_models.py` - Core evaluation logic
+- `model_and_tokenizer.py` - Model loading utilities
+- `text_generation_wrapper.py` - Generation wrapper for inference
+- `load_math_500.py` - Dataset loading utilities
+
+**When to use:** After fine-tuning or before deploying your model to measure reasoning performance
+
+**Typical workflow:** Generate predictions → Compare with ground truth → Calculate metrics
+
+👉 See [evaluating_reasoning_models/README.md](evaluating_reasoning_models/README.md) for detailed documentation
+
+---
+
+### **4. `generating_text_with_pre_trained_llm/` - Text Generation & Inference**
+**What it does:** Scripts and utilities for generating text using pre-trained language models with various decoding strategies.
+
+**Key workflow:**
+- Load a pre-trained model (or your custom model)
+- Generate text with configurable parameters
+- Implement different decoding strategies (greedy, top-k, nucleus sampling, etc.)
+- Collect generation statistics and performance metrics
+- Support batch inference for efficiency
+
+**Contains:** Generation scripts, inference utilities, and statistics collection
+- `generate.py` - Main text generation script
+- `generate_stats.py` - Statistics collection from generations
+
+**When to use:** For inference, testing, and generating predictions on new prompts
+
+**Examples:**
+- Generate solutions to math problems
+- Test model behavior with different sampling strategies
+- Collect text for evaluation
+
+👉 See [generating_text_with_pre_trained_llm/README.md](generating_text_with_pre_trained_llm/README.md) for detailed documentation
+
+---
+
+### **5. `improving_reasoning_with_inference_time_scaling/` - Inference-Time Optimization (⭐ Primary Focus)**
+**What it does:** Advanced inference-time techniques to enhance model reasoning without retraining.
+
+**Key workflow:**
+- Apply temperature scaling, nucleus sampling, and other techniques
+- Implement Chain-of-Thought (CoT) prompting
+- Generate multiple reasoning paths and take majority vote (self-consistency)
+- Measure improvements in reasoning accuracy
+- Benchmark against baseline generation strategies
+
+**Contains:** Inference optimization scripts, evaluation datasets, and results
+- `improving_reasoning_with_inference_time_scaling.py` - Core implementation
+- `math500-base-cuda-cot-greedy.jsonl` - Results with CoT greedy decoding
+- `math500-base-cuda-cot-self-consistency.jsonl` - Results with CoT + self-consistency
+
+**When to use:** To improve reasoning performance of existing models at inference time without retraining
+
+**Key insight:** Different inference strategies can significantly boost reasoning accuracy—explore and compare!
+
+👉 See [improving_reasoning_with_inference_time_scaling/README.md](improving_reasoning_with_inference_time_scaling/README.md) for detailed documentation
+
+---
+
+## 🚀 Quick Start Workflow
+
+**For new users, follow this typical workflow:**
+
+1. **Download a base model:**
+   ```bash
+   cd downloading_the_base_model
+   python download_model.py  # Download from Hugging Face
+   ```
+
+2. **Define and initialize your custom architecture:**
+   ```bash
+   cd ../base_model
+   # Review qwen.py to understand the architecture
+   python qwen.py  # Initialize your model
+   ```
+
+3. **Generate text with your model:**
+   ```bash
+   cd ../generating_text_with_pre_trained_llm
+   python generate.py  # Generate predictions
+   ```
+
+4. **Evaluate reasoning performance:**
+   ```bash
+   cd ../evaluating_reasoning_models
+   python evaluating_reasoning_models.py  # Run evaluation on benchmarks
+   ```
+
+5. **Improve reasoning with inference-time scaling:**
+   ```bash
+   cd ../improving_reasoning_with_inference_time_scaling
+   python improving_reasoning_with_inference_time_scaling.py  # Apply scaling techniques
+   ```
+
+---
+
+## 📖 Recommended Reading Order
+
+- **New to the repo?** Start with the main README (you're here!) and then explore each folder's README
+- **Want to understand architecture?** → `base_model/README.md`
+- **Need to download a model?** → `downloading_the_base_model/README.md`
+- **Ready to generate text?** → `generating_text_with_pre_trained_llm/README.md`
+- **Want to evaluate?** → `evaluating_reasoning_models/README.md`
+- **Interested in improving reasoning?** → `improving_reasoning_with_inference_time_scaling/README.md` (⭐ focus area)
 * Contribute back to the open-source AI ecosystem
 
 ## Status
