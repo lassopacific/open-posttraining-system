@@ -141,6 +141,27 @@ def extract_final_candidate(text: str, fallback: str = "number_then_full") -> st
     return ""
 
 
+def has_complete_boxed_answer(text):
+    start = text.rfind(r"\boxed")
+    if start == -1:
+        return False
+
+    brace_start = text.find("{", start)
+    if brace_start == -1:
+        return False
+
+    depth = 0
+    for ch in text[brace_start:]:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return True
+
+    return False
+
+
 def normalize_text(text: str) -> str:
     """Clean and normalize mathematical text for comparison."""
     if not text:
@@ -279,9 +300,9 @@ def run_demos_table(tests):
 def render_prompt(prompt: str) -> str:
     return (
         "You are a helpful math assistant.\n"
-        "Answer the question and write the final result on a new line as:\n"
-        "\\boxed{ANSWER}\n\n"
-        f"Question:\n{prompt}\n\nAnswer:"
+        "Solve the problem and write the final result on a new line as:\n"
+        "\\boxed{Solution}\n\n"
+        f"Problem:\n{prompt}\n\nSolution:"
     )
 
 
