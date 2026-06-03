@@ -297,13 +297,14 @@ def run_demos_table(tests):
     print(f"\nPassed {passed}/{len(rows)}")
 
 
-def render_prompt(prompt: str) -> str:
-    return (
+def render_prompt(prompt):
+    template = (
         "You are a helpful math assistant.\n"
-        "Solve the problem and write the final result on a new line as:\n"
-        "\\boxed{Solution}\n\n"
-        f"Problem:\n{prompt}\n\nSolution:"
+        "Answer the question and write the final result on a new line as:\n"
+        "\\boxed{ANSWER}\n\n"
+        f"Question:\n{prompt}\n\nAnswer:"
     )
+    return template
 
 
 
