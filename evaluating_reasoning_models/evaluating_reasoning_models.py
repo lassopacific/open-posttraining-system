@@ -298,14 +298,13 @@ def run_demos_table(tests):
 
 
 def render_prompt(prompt):
-    template = (
+    return (
         "You are a helpful math assistant.\n"
-        "Answer the question and write the final result on a new line as:\n"
-        "\\boxed{ANSWER}\n\n"
-        f"Question:\n{prompt}\n\nAnswer:"
+        "Solve the problem step by step.\n"
+        "Put the final answer inside \\boxed{}.\n\n"
+        f"Question:\n{prompt}\n\n"
+        "Answer:\n"
     )
-    return template
-
 
 
 
