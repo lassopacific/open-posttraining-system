@@ -297,12 +297,13 @@ def run_demos_table(tests):
     print(f"\nPassed {passed}/{len(rows)}")
 
 
-def render_prompt(prompt):
+def render_prompt(problem: str) -> str:
     return (
-        "You are a helpful math assistant.\n"
+        "You are a helpful math assistant.\n\n"
         "Solve the problem step by step.\n"
-        "Put the final answer inside \\boxed{}.\n\n"
-        f"Question:\n{prompt}\n\n"
+        "The last line of your response should contain only the final answer "
+        "inside \\boxed{}.\n\n"
+        f"Question:\n{problem}\n\n"
         "Answer:\n"
     )
 
