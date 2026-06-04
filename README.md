@@ -6,7 +6,9 @@ The goal of this repository is to build research-grade, reproducible implementat
 
 ---
 
-## 🎯 Current Focus: Improving Reasoning with Inference Time Scaling
+
+## 🎯 Current Focus: Improving Reasoning with Inference Time Scaling<img width="1536" height="1024" alt="ChatGPT Image Jun 4, 2026, 05_27_47 AM" src="https://github.com/user-attachments/assets/525e768d-5c6a-4308-a579-5c72f867a744" />
+
 
 **Status:** Active Development
 
