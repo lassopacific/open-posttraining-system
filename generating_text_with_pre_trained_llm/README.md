@@ -1,151 +1,27 @@
-# Generating Text with Pre-trained LLM
+# Generating text with a pre-trained LLM (short)
 
-## Overview
+This folder shows how the project runs local text generation using the `Qwen` model implementation in `base_model/qwen.py` rather than `transformers` high-level helpers.
 
-This folder contains utilities and scripts for text generation using pre-trained language models. Use this to:
+Key points:
+- Artifacts expected: a local folder `generating_text_with_pre_trained_llm/qwen/` containing `tokenizer.json` and `model.safetensors` (the notebook and `generate.py` download these optionally).
+- The code uses `Qwen3Tokenizer` (from `base_model.qwen`) and `Qwen3Model` + the local loader `load_hf_weights_into_qwen` to copy tensors from `safetensors` into the model.
+- `generate.py` demonstrates the end-to-end flow: load tokenizer, load weights with `safetensors.torch.load_file`, instantiate `Qwen3Model(QWEN_CONFIG_06_B)`, call `load_hf_weights_into_qwen(...)`, move the model to device and `torch.bfloat16`, and call `generate_text(...)` to produce output. The script expects the `qwen/` folder next to `generate.py`.
 
-- **Generate predictions** on new prompts and queries
-- **Test different decoding strategies** (greedy, sampling, nucleus sampling, etc.)
-- **Collect generation statistics** to understand model behavior
-- **Create batches of predictions** for evaluation or analysis
-- **Experiment with different sampling parameters** (temperature, top-p, top-k)
+What the notebook (`main.ipynb`) shows:
+- Simple streaming generation loops that call the model step-by-step (argmax sampling) or use the project's `generate_text(...)` helper.
+- A KV-cache-based generator that pre-fills the prompt and then decodes one token at a time using cached K/V tensors for faster autoregressive decoding.
+- Optional use of `torch.compile(model)` to benchmark compiled inference and reporting via `generate_stats`.
 
-**Purpose:** Serve as the inference layer for testing models before evaluation or after optimization.
+Quick usage (run from `generating_text_with_pre_trained_llm`):
 
-## Contents
-
-### `generate.py`
-Main text generation script with multiple decoding strategies.
-
-**Key features:**
-- Load pre-trained models and tokenizers
-- Generate text with configurable parameters
-- Support multiple decoding strategies
-- Handle batch generation efficiently
-- Optional CUDA/GPU acceleration
-
-**Usage:**
 ```bash
-python generate.py --prompt "What is 2+2?" --model "Qwen/Qwen-7B"
+# ensure artifacts are in ./qwen/ (tokenizer.json, model.safetensors, config.json)
+python generate.py   # script prints the generated response (default prompt in the script)
 ```
 
-### `generate_stats.py`
-Collects and analyzes statistics from text generation runs.
+Or follow the notebook `main.ipynb` for interactive examples (streaming, KV cache, compilation, and basic timing).
 
-**Key metrics:**
-- Generation time per sample
-- Tokens generated
-- Model latency and throughput
-- Memory usage
-- Performance statistics
-
-**Usage:**
-```bash
-python generate_stats.py --results "generation_results.json" --output "stats.json"
-```
-
-## Workflow
-
-### Step 1: Load Model and Tokenizer
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-model_name = "Qwen/Qwen-7B"
-model = AutoModelForCausalLM.from_pretrained(model_name)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = model.to("cuda")
-```
-
-### Step 2: Prepare Input
-
-```python
-# Single prompt
-prompt = "Solve: What is 2 + 2?"
-
-# Or batch of prompts
-prompts = [
-    "Solve: What is 2 + 2?",
-    "Solve: What is 3 * 4?",
-    "Explain quantum computing in simple terms."
-]
-
-# Tokenize
-inputs = tokenizer(prompts, return_tensors="pt", padding=True)
-input_ids = inputs["input_ids"].to("cuda")
-attention_mask = inputs["attention_mask"].to("cuda")
-```
-
-### Step 3: Generate Text
-
-```python
-# Generate with greedy decoding (default)
-outputs = model.generate(
-    input_ids,
-    attention_mask=attention_mask,
-    max_new_tokens=100,
-    pad_token_id=tokenizer.eos_token_id
-)
-
-# Decode to text
-generated_text = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-print(generated_text)
-```
-
-### Step 4: Collect Results
-
-```python
-results = {
-    "prompt": prompt,
-    "generated_text": generated_text,
-    "num_tokens": len(outputs[0]),
-    "generation_time": time_elapsed
-}
-```
-
-## Decoding Strategies
-
-### 1. Greedy Decoding (Default)
-Always selects the most likely next token.
-
-```python
-outputs = model.generate(
-    input_ids,
-    max_new_tokens=100,
-    do_sample=False  # Greedy
-)
-```
-
-**Pros:**
-- Fast and deterministic
-- Reproducible results
-- Simple logic
-
-**Cons:**
-- Limited diversity
-- May get stuck in loops
-- Not ideal for creative tasks
-
-**Best for:** Factual questions, standardized tasks
-
-### 2. Temperature Sampling
-Controls randomness of token selection using temperature parameter.
-
-```python
-outputs = model.generate(
-    input_ids,
-    max_new_tokens=100,
-    do_sample=True,
-    temperature=0.7  # Adjust randomness
-)
-```
-
-**Temperature values:**
-- **0.1-0.3:** Very focused, low diversity (like greedy)
-- **0.7-1.0:** Balanced, recommended default
-- **1.5-2.0:** Very creative, high diversity
-
-**Pros:**
+If you want, I can also simplify `main.ipynb` examples or update the notebook so the cells call `generate.py` functions directly.  
 - Simple parameter to tune
 - Effective diversity control
 - Well-understood behavior
