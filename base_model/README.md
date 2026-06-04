@@ -1,168 +1,80 @@
-# Base Model Architecture
+# Base model (Qwen)
 
 ## Overview
 
-This folder contains the custom model architecture definitions for building your own language model from scratch. The core idea is to:
+This folder implements a local Qwen-style model and tokenizer used across the project. The primary implementation is in `qwen.py` and exposes:
 
-1. **Define your own architecture** - Create custom model classes with desired properties
-2. **Load pre-trained weights** - Download weights from Hugging Face using the weights from `downloading_the_base_model/`
-3. **Initialize the model** - Combine your architecture with pre-trained weights
-4. **Use as foundation** - Deploy for inference, fine-tuning, or evaluation
+- `Qwen3Model` — model class (defined in `qwen.py`)
+- `Qwen3Tokenizer` — tokenizer wrapper that loads a `tokenizer.json` file (uses the `tokenizers` library)
+- `load_hf_weights_into_qwen(model, param_config, params)` — helper that copies tensors (e.g. from `safetensors`) into the model
+- `QWEN_CONFIG_06_B` — a ready-made config for the 0.6B variant
 
-## Contents
+This repository includes a helper script to download model artifacts from Hugging Face (optional): [downloading_the_base_model/download_model.py](downloading_the_base_model/download_model.py).
 
-### `qwen.py`
-Main file containing the custom Qwen model architecture implementation.
+## Files
 
-**Key components:**
-- Custom model class definitions
-- Architecture-specific forward passes
-- Weight loading utilities
-- Tokenizer integration
+- [base_model/qwen.py](base_model/qwen.py) — implementation of `Qwen3Model`, `Qwen3Tokenizer`, KV cache, generation helpers and the weight-loading utility.
+- [base_model/qwen.ipynb](base_model/qwen.ipynb) — notebook with examples and demonstrations.
 
-**Usage:**
-```python
-from qwen import YourCustomModel
-model = YourCustomModel.from_pretrained("qwen/model-name")
+## Quick start (recommended)
+
+1. Download model artifacts (config, `model.safetensors`, `tokenizer.json`) into a local folder (for example `qwen/`). The included script is optional and uses `huggingface_hub`:
+
+```bash
+python downloading_the_base_model/download_model.py --repo-id Qwen/Qwen3-0.6B --local-dir qwen
 ```
 
-### `qwen.ipynb`
-Jupyter notebook with step-by-step demonstrations of:
-- Building custom model architectures
-- Loading pre-trained weights
-- Model initialization and configuration
-- Testing the model architecture
+2. Load tokenizer, create the model, and load weights using the local loader:
 
-**Best for:** Understanding the architecture interactively and experimenting with different configurations
-
-## Workflow
-
-### Step 1: Define Architecture
-In your Python file, define your custom model class:
 ```python
-class CustomQwenModel(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        # Define layers and components
-        self.transformer = TransformerStack(config)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size)
-    
-    def forward(self, input_ids, attention_mask=None):
-        # Forward pass logic
-        ...
-```
+from base_model.qwen import (
+    Qwen3Model,
+    Qwen3Tokenizer,
+    load_hf_weights_into_qwen,
+    QWEN_CONFIG_06_B,
+)
+from safetensors.torch import load_file
+import json
 
-### Step 2: Load Pre-trained Weights
-```python
-# First, download weights using downloading_the_base_model/
-# Then load them into your custom architecture
-model = CustomQwenModel(config)
-model.load_state_dict(torch.load("path/to/weights.pt"))
-```
+# 1) Model config (a minimal runtime config is provided as QWEN_CONFIG_06_B)
+model_cfg = QWEN_CONFIG_06_B
 
-### Step 3: Initialize Model
-```python
-# Complete model initialization with tokenizer
-from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained("qwen/model-name")
-model = model.to("cuda")
+# 2) Instantiate model
+model = Qwen3Model(model_cfg)
+
+# 3) Tokenizer (this expects a tokenizer.json file)
+tokenizer = Qwen3Tokenizer("qwen/tokenizer.json")
+
+# 4) Load parameter layout/config and safetensors weights (downloaded into `qwen/`)
+param_config = json.load(open("qwen/config.json", "r", encoding="utf-8"))
+params = load_file("qwen/model.safetensors")
+
+# 5) Copy safetensors parameters into the model
+load_hf_weights_into_qwen(model, param_config, params)
+
+# 6) Ready for inference
 model.eval()
 ```
 
-### Step 4: Next Steps
-Your initialized model is ready for:
-- **Text Generation** → Use `../generating_text_with_pre_trained_llm/`
-- **Evaluation** → Use `../evaluating_reasoning_models/`
-- **Fine-tuning** → Create your training loop or use training frameworks
-- **Inference-time scaling** → Use `../improving_reasoning_with_inference_time_scaling/`
+Notes:
+- The project `Qwen3Tokenizer` uses the `tokenizers` library and reads a `tokenizer.json` file; it is not `transformers.AutoTokenizer`.
+- `load_hf_weights_into_qwen` is the project's loader: it expects a `param_config` (the original model config / parameter layout) and a mapping-like `params` object (for example returned by `safetensors.torch.load_file`). It performs in-place copies and supports multiple attribute-name variants (e.g., `emb` vs `tok_emb`, `t_block` vs `trf_blocks`).
+- If `lm_head.weight` is not present in the weights, the loader will tie the output head to the embedding weights and print a notice.
 
-## Key Concepts
+## Generation helper
 
-### Why Custom Architecture?
-- **Control:** Customize model components for your specific needs
-- **Experimentation:** Test architectural modifications
-- **Reproducibility:** Define exact architecture used in your work
-- **Integration:** Combine with pre-trained weights for rapid development
+`qwen.py` includes `generate_text(model, tokenizer, prompt, ...)` and a small sampling helper `sample_next_token(...)`. Use these for quick local inference experiments.
 
-### Architecture vs. Weights
-- **Architecture:** The structural definition of how data flows (qwen.py)
-- **Weights:** The learned parameters from pre-training (downloaded separately)
-- **Combined:** Architecture + weights = fully initialized model ready for use
+## Common pitfalls
 
-### Model Loading Pattern
-```
-Download Weights (downloading_the_base_model/)
-         ↓
-Define Custom Architecture (base_model/)
-         ↓
-Load Weights into Architecture
-         ↓
-Initialize with Tokenizer
-         ↓
-Ready for Inference/Training
-```
+- Tokenizer file missing: `Qwen3Tokenizer` requires `tokenizer.json` present at the path you pass it.
+- Config/param mismatch: `param_config` must match the layout expected by `load_hf_weights_into_qwen` (e.g., `n_layers`, `num_experts` when applicable).
+- Device/dtype: the model config may use lower precision (`torch.bfloat16`) — move the model to the appropriate device/dtype before large runs.
 
-## Configuration
+## Where to look next
 
-### Common Configuration Parameters
-- `hidden_size` - Dimension of transformer hidden states
-- `num_hidden_layers` - Number of transformer blocks
-- `num_attention_heads` - Number of attention heads
-- `vocab_size` - Size of vocabulary
-- `max_position_embeddings` - Maximum sequence length
-- `intermediate_size` - Dimension of feedforward layer
+- Examples and interactive exploration: [base_model/qwen.ipynb](base_model/qwen.ipynb)
+- Download helper: [downloading_the_base_model/download_model.py](downloading_the_base_model/download_model.py)
+- Generation and evaluation pipelines: `generating_text_with_pre_trained_llm/` and `evaluating_reasoning_models/`
 
-Example:
-```python
-config = {
-    "hidden_size": 1024,
-    "num_hidden_layers": 12,
-    "num_attention_heads": 16,
-    "vocab_size": 151936,  # Qwen specific
-    "max_position_embeddings": 2048,
-}
-```
-
-## Common Issues & Solutions
-
-### Issue: Shape Mismatch When Loading Weights
-**Problem:** Downloaded weights don't match your architecture
-**Solution:** Ensure your model config matches the original model's config
-
-### Issue: Out of Memory
-**Problem:** Model too large for your GPU
-**Solution:**
-- Use smaller model variant
-- Enable gradient checkpointing
-- Use quantization techniques
-- Reduce batch size
-
-### Issue: Tokenizer Mismatch
-**Problem:** Downloaded tokenizer doesn't match model weights
-**Solution:** Use the tokenizer from the same model source
-
-## Best Practices
-
-1. **Document your architecture** - Add comments explaining non-standard choices
-2. **Test weight loading** - Verify shapes match before full training runs
-3. **Version your architecture** - Keep track of architectural changes
-4. **Use config files** - Separate architecture definition from configuration
-5. **Test inference** - Do a quick forward pass after initialization
-
-## Useful Resources
-
-- [Hugging Face Model Hub](https://huggingface.co/models) - Browse available models
-- [PyTorch nn.Module](https://pytorch.org/docs/stable/nn.html) - Base class documentation
-- Model-specific documentation - Qwen, LLaMA, Mistral, etc.
-
-## Next Steps
-
-After setting up your architecture:
-1. Load it with weights from `downloading_the_base_model/`
-2. Test generation in `generating_text_with_pre_trained_llm/`
-3. Evaluate performance in `evaluating_reasoning_models/`
-4. Optimize reasoning in `improving_reasoning_with_inference_time_scaling/`
-
-## Questions?
-
-Refer to the notebooks for working examples, or check parent README for project-wide guidance.
+If you want, I can also update any examples that still reference `transformers.AutoTokenizer` or `model.from_pretrained()` to use the local API shown above.
