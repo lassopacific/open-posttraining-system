@@ -7,7 +7,8 @@ from base_model.qwen import KVCache
 from collections import Counter
 import torch
 import matplotlib.pyplot as plt
-
+from evaluating_reasoning_models.model_and_tokenizer import load_model_and_tokenizer
+model, tokenizer = load_model_and_tokenizer(which_model="base", use_compile=false)
 
 def generate_text_stream_concat_flex(
     model, tokenizer, prompt, device, max_new_tokens,
@@ -216,17 +217,23 @@ def top_p_filter(probas, top_p):
 @torch.inference_mode()
 def generate_text_top_p_stream_cache(
     model,
-    token_ids,
+    prompt,
+    tokenizer, 
+    device,
     max_new_tokens,
     eos_token_id=None,
-    temperature=0.,
+    temperature=0.1,
     top_p=None
 ):
+
+    token_ids = torch.tensor(tokenizer.encode(prompt), device=device).unsqueeze(0)
     model.eval()
     cache = KVCache(n_layers=model.cfg["n_layers"])
     model.reset_kv_cache()
 
-    # Get logits
+    
+
+    # Step 3.1: Get logits
     out = model(token_ids, cache=cache)[:, -1]
     for _ in range(max_new_tokens):
 
@@ -236,16 +243,16 @@ def generate_text_top_p_stream_cache(
             next_token = torch.argmax(out, dim=-1, keepdim=True)
 
         else:
-            # Apply temperature scaling on logits
+            # Step 3.2: Apply temperature scaling on logits
             logits = scale_logits_by_temperature(out, temperature)
 
-            # Convert to probabilities
+            # Step 3.3: Convert to probabilities
             probas = torch.softmax(logits, dim=-1)
 
-            # Apply top-p filter to probabilities
-            probas = top_p_filter(probas, top_p)
+            # (New) Step 4: Apply top-p filter to probabilities
+            probas = top_p_filter(probas, top_p)            
 
-            # Sample token according to probabilities
+            # Step 3.4: Sample token according to probabilities
             next_token = torch.multinomial(probas.cpu(), num_samples=1)
             next_token = next_token.to(orig_device)
 
@@ -255,6 +262,7 @@ def generate_text_top_p_stream_cache(
 
         yield next_token
         out = model(next_token, cache=cache)[:, -1]
+
 
 
 def self_consistency_vote(
