@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 def generate_text_stream_concat_flex(
     model, tokenizer, prompt, device, max_new_tokens,
-    verbose=False, stop_after_boxed=False,
+    verbose=False,
     generate_func=None,  
     **generate_kwargs  
 ):
@@ -19,9 +19,7 @@ def generate_text_stream_concat_flex(
     if generate_func is None:  
         generate_func = generate_text_stream_with_kv_cache
 
-    if "top" in generate_kwargs and "top_p" not in generate_kwargs:
-        generate_kwargs["top_p"] = generate_kwargs.pop("top")
-
+  
    
 
     generated_ids = []
@@ -44,9 +42,6 @@ def generate_text_stream_concat_flex(
                 flush=True
             )
 
-        if stop_after_boxed and has_complete_boxed_answer(tokenizer.decode(generated_ids)):
-            break
-       
 
     return tokenizer.decode(generated_ids)
 
