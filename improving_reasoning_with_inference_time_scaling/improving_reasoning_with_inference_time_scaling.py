@@ -3,6 +3,7 @@
 from evaluating_reasoning_models.evaluating_reasoning_models import generate_text_stream_with_kv_cache
 from evaluating_reasoning_models.evaluating_reasoning_models import extract_final_candidate
 from base_model.qwen import KVCache
+from evaluating_reasoning_models.evaluating_reasoning_models import has_complete_boxed_answer
 
 from collections import Counter
 import torch
@@ -11,17 +12,14 @@ import matplotlib.pyplot as plt
 def generate_text_stream_concat_flex(
     model, tokenizer, prompt, device, max_new_tokens,
     verbose=False,
-    generate_func=None,   
+    generate_func=None,  
     **generate_kwargs  
 ):
 
     if generate_func is None:  
         generate_func = generate_text_stream_with_kv_cache
 
-    if "top" in generate_kwargs and "top_p" not in generate_kwargs:
-        generate_kwargs["top_p"] = generate_kwargs.pop("top")
-
-
+   
 
     generated_ids = []
     for token in generate_func(  
@@ -42,6 +40,8 @@ def generate_text_stream_concat_flex(
                 end="",
                 flush=True
             )
+       
+
     return tokenizer.decode(generated_ids)
 
 
