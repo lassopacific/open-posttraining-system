@@ -7,8 +7,6 @@ from base_model.qwen import KVCache
 from collections import Counter
 import torch
 import matplotlib.pyplot as plt
-from evaluating_reasoning_models.model_and_tokenizer import load_model_and_tokenizer
-model, tokenizer = load_model_and_tokenizer(which_model="base", use_compile=false)
 
 def generate_text_stream_concat_flex(
     model, tokenizer, prompt, device, max_new_tokens,
@@ -19,6 +17,9 @@ def generate_text_stream_concat_flex(
 
     if generate_func is None:  
         generate_func = generate_text_stream_with_kv_cache
+
+    if "top" in generate_kwargs and "top_p" not in generate_kwargs:
+        generate_kwargs["top_p"] = generate_kwargs.pop("top")
 
 
 
