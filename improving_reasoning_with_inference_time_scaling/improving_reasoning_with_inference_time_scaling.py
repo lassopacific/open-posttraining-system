@@ -13,6 +13,7 @@ def generate_text_stream_concat_flex(
     model, tokenizer, prompt, device, max_new_tokens,
     verbose=False,
     generate_func=None,  
+    stop_boxed=True,
     **generate_kwargs  
 ):
 
@@ -23,6 +24,7 @@ def generate_text_stream_concat_flex(
    
 
     generated_ids = []
+    generated_text = ""
     for token in generate_func(  
         prompt=prompt,
         model=model,
@@ -34,14 +36,18 @@ def generate_text_stream_concat_flex(
     ):
         next_token_id = token.squeeze(0)
         generated_ids.append(next_token_id.item())
+        token_text = tokenizer.decode(next_token_id.item())
+        generated_text += token_text
 
         if verbose:
             print(
-                tokenizer.decode(next_token_id.tolist()),
+                token_text,
                 end="",
                 flush=True
             )
 
+        if stop_boxed and has_complete_boxed_answer(generated_text):
+            break
 
     return tokenizer.decode(generated_ids)
 
