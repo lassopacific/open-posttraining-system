@@ -24,7 +24,6 @@ def generate_text_stream_concat_flex(
    
 
     generated_ids = []
-    generated_text = ""
     for token in generate_func(  
         prompt=prompt,
         model=model,
@@ -34,20 +33,18 @@ def generate_text_stream_concat_flex(
         eos_token_id=tokenizer.eos_token_id,
         **generate_kwargs,  
     ):
-        next_token_id = token.squeeze(0)
-        generated_ids.append(next_token_id.item())
-        token_text = tokenizer.decode(next_token_id.item())
-        generated_text += token_text
+        next_token_id = token.squeeze(0).item()
+        generated_ids.append(next_token_id)
 
         if verbose:
-            print(
-                token_text,
-                end="",
-                flush=True
-            )
+            # Decode as a list for proper tokenizer handling
+            print(tokenizer.decode([next_token_id]), end="", flush=True)
 
-        if stop_boxed and has_complete_boxed_answer(generated_text):
-            break
+        # Check stopping condition on the full decoded sequence
+        if stop_boxed:
+            generated_text = tokenizer.decode(generated_ids)
+            if has_complete_boxed_answer(generated_text):
+                break
 
     return tokenizer.decode(generated_ids)
 
