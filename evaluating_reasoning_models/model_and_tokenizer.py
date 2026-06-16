@@ -28,7 +28,10 @@ def load_model_and_tokenizer(which_model, use_compile):
 
     if which_model == "base":
         tokenizer = Qwen3Tokenizer(
-            model_dir / "tokenizer.json"
+            model_dir / "tokenizer.json",
+            apply_chat_template=True,
+            add_generation_prompt=True,
+            add_thinking=False,
         )
 
     elif which_model == "reasoning":
