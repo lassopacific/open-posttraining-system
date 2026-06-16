@@ -507,7 +507,11 @@ class Qwen3Tokenizer:
         if enable_thinking is None:
             enable_thinking = self.add_thinking
 
-        s = f"<|im_start|>user\n{user_msg}<|im_end|>\n"
+        s = (
+            f"<|im_start|>user\n"
+            f"{user_msg}\n"
+            f"<|im_end|>\n"
+        )
         if add_generation_prompt:
             s += "<|im_start|>assistant\n"
             if not enable_thinking:
