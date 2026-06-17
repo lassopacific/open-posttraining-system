@@ -45,20 +45,35 @@ def load_model_and_tokenizer(which_model, use_compile):
     else:
         raise ValueError("Not a valid model type")
 
-    weights = load_file(model_dir / "model.safetensors")
-
     model = Qwen3Model(QWEN_CONFIG_06_B)
-
-    load_hf_weights_into_qwen(
-        model,
-        param_config={
-            "n_layers": QWEN_CONFIG_06_B["n_layers"],
-            "hidden_dim": QWEN_CONFIG_06_B["hidden_dim"],
-        },
-        params=weights,
-    )
-
+    
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Try to load from .pth checkpoint first, then fall back to safetensors
+    checkpoint_path = model_dir / "qwen3-0.6B-rlvr-grpo-step00033-interrupt.pth"
+    if checkpoint_path.exists():
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        
+        # If checkpoint is a dict with 'model' key, extract it
+        if isinstance(checkpoint, dict) and 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        else:
+            state_dict = checkpoint
+        
+        # Load state dict into model
+        model.load_state_dict(state_dict, strict=False)
+    else:
+        # Fall back to loading from safetensors
+        weights = load_file(model_dir / "model.safetensors")
+        load_hf_weights_into_qwen(
+            model,
+            param_config={
+                "n_layers": QWEN_CONFIG_06_B["n_layers"],
+                "hidden_dim": QWEN_CONFIG_06_B["hidden_dim"],
+            },
+            params=weights,
+        )
 
     model.to(device)
     model.to(torch.bfloat16)

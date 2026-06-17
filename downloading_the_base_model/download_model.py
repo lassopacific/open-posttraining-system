@@ -4,15 +4,16 @@ from huggingface_hub import snapshot_download
 def download_model(repo_id="Qwen/Qwen3-0.6B", local_dir="qwen"):
     os.makedirs(local_dir, exist_ok=True)
 
-
-    downlaod_path = snapshot_download(repo_id=repo_id,
-                    local_dir=local_dir,
-                    allow_patterns=[
-                        "config.json",
-                        "qwen3-0.6B-rlvr-grpo-step00033-interrupt.pth",
-                        "tokenizer.json",
-                        "tokenizer_config.json",
-                    ])
+    downlaod_path = snapshot_download(
+        repo_id=repo_id,
+        local_dir=local_dir,
+        allow_patterns=[
+            "config.json",
+            "qwen3-0.6B-rlvr-grpo-step00033-interrupt.pth",
+            "tokenizer.json",
+            "tokenizer_config.json",
+        ]
+    )
     return downlaod_path
 
 if __name__ == "__main__":
