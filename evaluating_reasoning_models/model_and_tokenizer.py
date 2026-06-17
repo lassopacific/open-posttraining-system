@@ -7,7 +7,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from downloading_the_base_model.download_model import download_model
 
-download_model("Qwen/Qwen3-0.6B", "qwen")
+download_model("devshaheen/qwen3.5_0.6B_rlvr_grpo_run_33_steps", "qwen")  ## this is change later
 
 
 import torch
